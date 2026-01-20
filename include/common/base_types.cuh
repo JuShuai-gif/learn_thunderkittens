@@ -278,6 +278,7 @@ template<> struct constants<int2> {
     static __device__ inline constexpr int2 one()       { return int2{1, 1}; }
 };
 
+// 打包数据类型
 template<typename T> struct packing{
     static __device__ inline constexpr int num(){
         return 1;
@@ -377,7 +378,7 @@ template<> struct packing<float4> {
 template<> struct packing<int4> {
     static __device__ inline constexpr int num() { return 4; }
 };
-#if defined(KITTENS_HOPPER) || defined(KITTENS_BLACKWELL)
+#if defined(DF_HOPPER) || defined(DF_BLACKWELL)
 template<> struct packing<fp8e4m3> {
     static __device__ inline constexpr int num() { return 1; }
     using unpacked_type = fp8e4m3;
