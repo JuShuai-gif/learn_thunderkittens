@@ -23,6 +23,7 @@ using bf16_2 = __nv_bfloat162;
 using half_2 = __half2;
 
 #if defined(DF_HOPPER) || defined(DF_BLACKWELL)
+// float8格式
 /**
  * @brief float8 floating-point type.
  */
@@ -32,6 +33,7 @@ using fp8e5m2 = __nv_fp8_e5m2;
 using fp8e8m0 = __nv_fp8_e8m0;
 #endif
 
+// 将两个float8打包在一起
 /**
  * @brief 2-packed float8 floating-point type.
  */
@@ -41,6 +43,7 @@ using fp8e5m2_2 = __nv_fp8x2_e5m2;
 using fp8e8m0_2 = __nv_fp8x2_e8m0;
 #endif
 
+// 将四个float8打包在一起
 /**
  * @brief 4-packed float8 floating-point type.
  */
@@ -52,6 +55,7 @@ using fp8e8m0_4 = __nv_fp8x4_e8m0;
 #endif
 
 #ifdef DF_BLACKWELL
+// fp4结构
 /**
  * @brief float4 floating-point type.
  */
@@ -74,26 +78,29 @@ namespace base_types{
 // 打包数据类型
 template<typename T>
 concept T2 = std::is_same_v<T,float2> || std::is_same_v<T,bf16_2> || std::is_same_v<T,half_2> || std::is_same_v<T,fp8e4m3_4> || std::is_same_v<T,fp8e5m2_4> || || std::is_same_v<T, fp8e8m0_4> || std::is_same_v<T, fp4e2m1_4>;
-// 
+// 标量数据类型
 template<typename T>
 concept T1 = std::is_same_v<T, float>  || std::is_same_v<T, bf16  > || std::is_same_v<T, half  > || std::is_same_v<T, fp8e4m3  > || std::is_same_v<T, fp8e5m2  > || std::is_same_v<T, fp8e8m0  > || std::is_same_v<T, fp4e2m1_2>;
 
 #elif defined(DF_HOPPER)
+// 打包数据类型
 template<typename T>
 concept T2 = std::is_same_v<T, float2> || std::is_same_v<T, bf16_2> || std::is_same_v<T, half_2> || std::is_same_v<T, fp8e4m3_4> || std::is_same_v<T, fp8e5m2_4>;
+// 标量数据类型
 template<typename T>
 concept T1 = std::is_same_v<T, float>  || std::is_same_v<T, bf16  > || std::is_same_v<T, half  > || std::is_same_v<T, fp8e4m3  > || std::is_same_v<T, fp8e5m2  >;
-
 #else
+// 打包数据类型
 template<typename T>
 concept T2 = std::is_same_v<T,float2> || std::is_same_v<T,bf16_2> || std::is_same_v<T,half_2>;
+// 标量数据类型
 template <typename T>
 concept T1 = std::is_same_v<T,float> || std::is_same_v<T,bf16> || std::is_same_v<T,half>;
-
 #endif
 }
 }
 
+// 基本数据类型
 namespace base_types{
 template<typename T> struct constants
 {
