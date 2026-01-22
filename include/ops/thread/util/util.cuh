@@ -1,338 +1,283 @@
 #pragma once
 
+#include "sync.cuh"
+#if defined(KITTENS_HOPPER) || defined(KITTENS_BLACKWELL)
+#include "tma.cuh"
+#endif
+
 namespace kittens {
 
-struct semaphore
-{
-private:
-    uint64_t value;
-};
-template<int num_warps> struct barrier
-{
-    int barrier_id;
-    __device__ __forceinline__ barrier(int _id) :barrier_id(_id){}
+/* ----------   To prevent generic addressing, PTX  ---------- */
 
-    __device__ __forceinline__ barrier operator[](int i){
-        return barrier(barrier_id + i);
+template<typename T> struct move {
+    __device__ static inline void lds(T& dst, uint32_t src);
+    __device__ static inline void sts(uint32_t dst, const T& src);
+    __device__ static inline void ldg(T& dst, T* src);
+    __device__ static inline void stg(T* dst, const T& src);
+};
+
+// unpacked types
+template<> struct move<bf16> {
+    __device__ static inline void lds(bf16& dst, uint32_t src) {
+        asm volatile("ld.shared.b16 %0, [%1];\n" : "=h"(*(uint16_t*)&dst) : "r"(src));
+    }
+    __device__ static inline void sts(uint32_t dst, const bf16& src) {
+        asm volatile("st.shared.b16 [%1], %0;\n" : : "h"(*(uint16_t*)&src), "r"(dst));
+    }
+    __device__ static inline void ldg(bf16& dst, bf16* src) {
+        asm volatile("ld.global.b16 %0, [%1];\n" : "=h"(*(uint16_t*)&dst) : "l"(src));
+    }
+    __device__ static inline void stg(bf16* dst, const bf16& src) {
+        asm volatile("st.global.b16 [%1], %0;\n" : : "h"(*(uint16_t*)&src), "l"(dst));
     }
 };
-
-
-__device__ static inline void init_semaphore(semaphore& bar,int thread_count,int transaction_count = 0){
-    void const* const ptr = &bar;
-    uint32_t bar_ptr = static_cast<uint32_t>(__cvta_generic_to_shared(ptr));
-
-    asm volatile(
-        "mbarrier.init.shared::cta.b64 [%0], %1;\n"
-            :: "r"(bar_ptr), "r"(thread_count + transaction_count)
-    );
-}
-
-
-__device__ static inline void invalidate_semaphore(semaphore& bar){
-    void const* const ptr = &bar;
-    uint32_t bar_ptr = static_cast<uint32_t>(__cvta_generic_to_shared(ptr));
-    asm volatile (
-        "mbarrier.inval.shared::cta.b64 [%0];\n"
-        :: "r"(bar_ptr)
-    );    
-}
-
-__device__ static inline void arrive(semaphore& sem) {
-    uint32_t mbar_ptr = static_cast<uint32_t>(__cvta_generic_to_shared(&sem)); 
-    asm volatile (
-        "mbarrier.arrive.release.cta.shared::cta.b64 _, [%0];\n"
-        :
-        : "r"(mbar_ptr)
-        : "memoey"
-    );
-}
-template<int num_warps> __device__ static inline void arrive(barrier<num_warps> bar) {
-    asm volatile("bar.arrive %0, %1;\n" :: "r"(bar.barrier_id), "n"(num_warps*WARP_THREADS) : "memory");
-}
-
+template<> struct move<half> {
+    __device__ static inline void lds(half& dst, uint32_t src) {
+        asm volatile("ld.shared.b16 %0, [%1];\n" : "=h"(*(uint16_t*)&dst) : "r"(src));
+    }
+    __device__ static inline void sts(uint32_t dst, const half& src) {
+        asm volatile("st.shared.b16 [%1], %0;\n" : : "h"(*(uint16_t*)&src), "r"(dst));
+    }
+    __device__ static inline void ldg(half& dst, half* src) {
+        asm volatile("ld.global.b16 %0, [%1];\n" : "=h"(*(uint16_t*)&dst) : "l"(src));
+    }
+    __device__ static inline void stg(half* dst, const half& src) {
+        asm volatile("st.global.b16 [%1], %0;\n" : : "h"(*(uint16_t*)&src), "l"(dst));
+    }
+};
+template<> struct move<float> {
+    __device__ static inline void lds(float& dst, uint32_t src) {
+        asm volatile("ld.shared.f32 %0, [%1];\n" : "=f"(dst) : "r"(src));
+    }
+    __device__ static inline void sts(uint32_t dst, const float& src) {
+        asm volatile("st.shared.f32 [%1], %0;\n" : : "f"(src), "r"(dst));
+    }
+    __device__ static inline void ldg(float& dst, float* src) {
+        asm volatile("ld.global.f32 %0, [%1];\n" : "=f"(dst) : "l"(src));
+    }
+    __device__ static inline void stg(float* dst, const float& src) {
+        asm volatile("st.global.f32 [%1], %0;\n" : : "f"(src), "l"(dst));
+    }
+};
+template<> struct move<int> {
+    __device__ static inline void lds(int& dst, uint32_t src) {
+        asm volatile("ld.shared.u32 %0, [%1];\n" : "=r"(dst) : "r"(src));
+    }
+    __device__ static inline void sts(uint32_t dst, const int& src) {
+        asm volatile("st.shared.u32 [%1], %0;\n" : : "r"(src), "r"(dst));
+    }
+    __device__ static inline void ldg(int& dst, int* src) {
+        asm volatile("ld.global.u32 %0, [%1];\n" : "=r"(dst) : "l"(src));
+    }
+    __device__ static inline void stg(int* dst, const int& src) {
+        asm volatile("st.global.u32 [%1], %0;\n" : : "r"(src), "l"(dst));
+    }
+};
+// packed types
+template<> struct move<bf16_2> {
+    __device__ static inline void lds(bf16_2& dst, uint32_t src) {
+        asm volatile("ld.shared.b32 %0, [%1];\n" : "=r"(*(uint32_t*)&dst) : "r"(src));
+    }
+    __device__ static inline void sts(uint32_t dst, const bf16_2& src) {
+        asm volatile("st.shared.b32 [%1], %0;\n" : : "r"(*(uint32_t*)&src), "r"(dst));
+    }
+    __device__ static inline void ldg(bf16_2& dst, bf16_2* src) {
+        asm volatile("ld.global.b32 %0, [%1];\n" : "=r"(*(uint32_t*)&dst) : "l"(src));
+    }
+    __device__ static inline void stg(bf16_2* dst, const bf16_2& src) {
+        asm volatile("st.global.b32 [%1], %0;\n" : : "r"(*(uint32_t*)&src), "l"(dst));
+    }
+    __device__ static inline void ldsm4(bf16_2& dst1, bf16_2& dst2, bf16_2& dst3, bf16_2& dst4, uint32_t src) {
+        asm volatile("ldmatrix.sync.aligned.m8n8.x4.shared::cta.b16 {%0, %1, %2, %3}, [%4];\n" :
+                     "=r"(*(uint32_t*)&dst1), "=r"(*(uint32_t*)&dst2), "=r"(*(uint32_t*)&dst3), "=r"(*(uint32_t*)&dst4) : "r"(src));
+    }
+    __device__ static inline void ldsm4t(bf16_2& dst1, bf16_2& dst2, bf16_2& dst3, bf16_2& dst4, uint32_t src) {
+        asm volatile("ldmatrix.sync.aligned.m8n8.x4.trans.shared::cta.b16 {%0, %1, %2, %3}, [%4];\n" :
+                     "=r"(*(uint32_t*)&dst1), "=r"(*(uint32_t*)&dst2), "=r"(*(uint32_t*)&dst3), "=r"(*(uint32_t*)&dst4) : "r"(src));
+    }
+    __device__ static inline void stsm4(uint32_t dst, bf16_2& src1, bf16_2& src2, bf16_2& src3, bf16_2& src4) {
+        asm volatile("stmatrix.sync.aligned.m8n8.x4.shared::cta.b16 [%4], {%0, %1, %2, %3};\n" ::
+                     "r"(*(uint32_t*)&src1), "r"(*(uint32_t*)&src2), "r"(*(uint32_t*)&src3), "r"(*(uint32_t*)&src4), "r"(dst));
+    }
+    __device__ static inline void stsm4t(uint32_t dst, bf16_2& src1, bf16_2& src2, bf16_2& src3, bf16_2& src4) {
+        asm volatile("stmatrix.sync.aligned.m8n8.x4.trans.shared::cta.b16 [%4], {%0, %1, %2, %3};\n" ::
+                     "r"(*(uint32_t*)&src1), "r"(*(uint32_t*)&src2), "r"(*(uint32_t*)&src3), "r"(*(uint32_t*)&src4), "r"(dst));
+    }
+};
+template<> struct move<half_2> {
+    __device__ static inline void lds(half_2& dst, uint32_t src) {
+        asm volatile("ld.shared.b32 %0, [%1];\n" : "=r"(*(uint32_t*)&dst) : "r"(src));
+    }
+    __device__ static inline void sts(uint32_t dst, const half_2& src) {
+        asm volatile("st.shared.b32 [%1], %0;\n" : : "r"(*(uint32_t*)&src), "r"(dst));
+    }
+    __device__ static inline void ldg(half_2& dst, half_2* src) {
+        asm volatile("ld.global.b32 %0, [%1];\n" : "=r"(*(uint32_t*)&dst) : "l"(src));
+    }
+    __device__ static inline void stg(half_2* dst, const half_2& src) {
+        asm volatile("st.global.b32 [%1], %0;\n" : : "r"(*(uint32_t*)&src), "l"(dst));
+    }
+    __device__ static inline void ldsm4(half_2& dst1, half_2& dst2, half_2& dst3, half_2& dst4, uint32_t src) {
+        asm volatile("ldmatrix.sync.aligned.m8n8.x4.shared::cta.b16 {%0, %1, %2, %3}, [%4];\n" :
+                     "=r"(*(uint32_t*)&dst1), "=r"(*(uint32_t*)&dst2), "=r"(*(uint32_t*)&dst3), "=r"(*(uint32_t*)&dst4) : "r"(src));
+    }
+    __device__ static inline void ldsm4t(half_2& dst1, half_2& dst2, half_2& dst3, half_2& dst4, uint32_t src) {
+        asm volatile("ldmatrix.sync.aligned.m8n8.x4.trans.shared::cta.b16 {%0, %1, %2, %3}, [%4];\n" :
+                     "=r"(*(uint32_t*)&dst1), "=r"(*(uint32_t*)&dst2), "=r"(*(uint32_t*)&dst3), "=r"(*(uint32_t*)&dst4) : "r"(src));
+    }
+    __device__ static inline void stsm4(uint32_t dst, half_2& src1, half_2& src2, half_2& src3, half_2& src4) {
+        asm volatile("stmatrix.sync.aligned.m8n8.x4.shared::cta.b16 [%4], {%0, %1, %2, %3};\n" ::
+                     "r"(*(uint32_t*)&src1), "r"(*(uint32_t*)&src2), "r"(*(uint32_t*)&src3), "r"(*(uint32_t*)&src4), "r"(dst));
+    }
+    __device__ static inline void stsm4t(uint32_t dst, half_2& src1, half_2& src2, half_2& src3, half_2& src4) {
+        asm volatile("stmatrix.sync.aligned.m8n8.x4.trans.shared::cta.b16 [%4], {%0, %1, %2, %3};\n" ::
+                     "r"(*(uint32_t*)&src1), "r"(*(uint32_t*)&src2), "r"(*(uint32_t*)&src3), "r"(*(uint32_t*)&src4), "r"(dst));
+    }
+};
+template<> struct move<float2> {
+    __device__ static inline void lds(float2& dst, uint32_t src) {
+        asm volatile("ld.shared.v2.f32 {%0, %1}, [%2];\n" : "=f"(dst.x), "=f"(dst.y) : "r"(src));
+    }
+    __device__ static inline void sts(uint32_t dst, const float2& src) {
+        asm volatile("st.shared.v2.f32 [%2], {%0, %1};\n" : : "f"(src.x), "f"(src.y), "r"(dst));
+    }
+    __device__ static inline void ldg(float2& dst, float2* src) {
+        asm volatile("ld.global.v2.f32 {%0, %1}, [%2];\n" : "=f"(dst.x), "=f"(dst.y) : "l"(src));
+    }
+    __device__ static inline void stg(float2* dst, const float2& src) {
+        asm volatile("st.global.v2.f32 [%2], {%0, %1};\n" : : "f"(src.x), "f"(src.y), "l"(dst));
+    }
+};
+template<> struct move<float4> {
+    __device__ static inline void lds(float4& dst, uint32_t src) {
+        asm volatile("ld.shared.v4.f32 {%0, %1, %2, %3}, [%4];\n" : "=f"(dst.x), "=f"(dst.y), "=f"(dst.z), "=f"(dst.w) : "r"(src));
+    }
+    __device__ static inline void sts(uint32_t dst, const float4& src) {
+        asm volatile("st.shared.v4.f32 [%4], {%0, %1, %2, %3};\n" : : "f"(src.x), "f"(src.y), "f"(src.z), "f"(src.w), "r"(dst));
+    }
+    __device__ static inline void ldg(float4& dst, float4* src) {
+        asm volatile("ld.global.v4.f32 {%0, %1, %2, %3}, [%4];\n" : "=f"(dst.x), "=f"(dst.y), "=f"(dst.z), "=f"(dst.w) : "l"(src));
+    }
+    __device__ static inline void stg(float4* dst, const float4& src) {
+        asm volatile("st.global.v4.f32 [%4], {%0, %1, %2, %3};\n" : : "f"(src.x), "f"(src.y), "f"(src.z), "f"(src.w), "l"(dst));
+    }
+};
 #if defined(DF_HOPPER) || defined(DF_BLACKWELL)
-/**
-* @brief Arrives at a semaphore.
-*
-* Marks a warp arrival at an mbarrier
-*
-* @param semaphore Reference to the semaphore variable.
-* @param kPhaseBit The phase bit used for the semaphore.
-*/
-__device__ static inline void arrive(semaphore& sem, uint32_t count) {
-    uint32_t mbar_ptr = static_cast<uint32_t>(__cvta_generic_to_shared(&sem));
-    asm volatile (
-        "mbarrier.arrive.release.cta.shared::cta.b64 _, [%0], %1;\n"
-        :
-        : "r"(mbar_ptr), "r"(count)
-        : "memory"
-    );
-}
+template<> struct move<fp8e4m3_4> {
+    __device__ static inline void ldsm4(fp8e4m3_4& dst1, fp8e4m3_4& dst2, fp8e4m3_4& dst3, fp8e4m3_4& dst4, uint32_t src) {
+        asm volatile("ldmatrix.sync.aligned.m8n8.x4.shared::cta.b16 {%0, %1, %2, %3}, [%4];\n" :
+                     "=r"(*(uint32_t*)&dst1),  "=r"(*(uint32_t*)&dst2), "=r"(*(uint32_t*)&dst3), "=r"(*(uint32_t*)&dst4) : "r"(src));
+    }
+    __device__ static inline void stsm4(uint32_t dst, fp8e4m3_4& src1, fp8e4m3_4& src2, fp8e4m3_4& src3, fp8e4m3_4& src4) {
+        asm volatile("stmatrix.sync.aligned.m8n8.x4.shared::cta.b16 [%4], {%0, %1, %2, %3};\n" ::
+                     "r"(*(uint32_t*)&src1), "r"(*(uint32_t*)&src2), "r"(*(uint32_t*)&src3), "r"(*(uint32_t*)&src4), "r"(dst));
+    }
+
+};
+template<> struct move<fp8e5m2_4> {
+    __device__ static inline void ldsm4(fp8e5m2_4& dst1, fp8e5m2_4& dst2, fp8e5m2_4& dst3, fp8e5m2_4& dst4, uint32_t src) {
+        asm volatile("ldmatrix.sync.aligned.m8n8.x4.shared::cta.b16 {%0, %1, %2, %3}, [%4];\n" :
+                     "=r"(*(uint32_t*)&dst1),  "=r"(*(uint32_t*)&dst2), "=r"(*(uint32_t*)&dst3), "=r"(*(uint32_t*)&dst4) : "r"(src));
+    }
+    __device__ static inline void stsm4(uint32_t dst, fp8e5m2_4& src1, fp8e5m2_4& src2, fp8e5m2_4& src3, fp8e5m2_4& src4) {
+        asm volatile("stmatrix.sync.aligned.m8n8.x4.shared::cta.b16 [%4], {%0, %1, %2, %3};\n" ::
+                     "r"(*(uint32_t*)&src1), "r"(*(uint32_t*)&src2), "r"(*(uint32_t*)&src3), "r"(*(uint32_t*)&src4), "r"(dst));
+    }
+};
 #endif
 
+/* ----------   Constants for Cache policies  ---------- */
 
-__device__ static inline void wait(semaphore& sem,int kPhaseBit){
-    void const* const ptr = &sem;
-    uint32_t mbar_ptr = static_cast<uint32_t>(__cvta_generic_to_shared(ptr));
-
-#if defined(DF_HOPPER) || defined(DF_BLACKWELL)
-    asm volatile (
-        "{\n"
-        ".reg .pred                P1;\n"
-        "LAB_WAIT:\n"
-        "mbarrier.try_wait.parity.shared::cta.b64 P1, [%0], %1;\n"
-        "@P1                       bra.uni DONE;\n"
-        "bra.uni                   LAB_WAIT;\n"
-        "DONE:\n"
-        "}\n"
-        :: "r"(mbar_ptr),
-        "r"(kPhaseBit)
-    );
-#else
-    asm volatile (
-        "{\n"
-        ".reg .pred                P1;\n"
-        "LAB_WAIT:\n"
-        "mbarrier.test_wait.parity.shared::cta.b64 P1, [%0], %1;\n"
-        "@P1                       bra.uni DONE;\n"
-        "nanosleep.u32 5;\n" // wait a few nanoseconds on pre-Hopper architectures to save instruction issue slots
-        "bra.uni                   LAB_WAIT;\n"
-        "DONE:\n"
-        "}\n"
-        :: "r"(mbar_ptr),
-        "r"(kPhaseBit)
-    );
-#endif
+enum cache_policy {
+    NORMAL = 0,
+    EVICT_FIRST = 1,
+    EVICT_LAST = 2
+};
+template<cache_policy policy> __device__ inline uint64_t make_cache_policy() {
+    uint64_t cache_policy_val;
+    constexpr float fraction = 1.0f;
+    static_assert(policy == cache_policy::EVICT_FIRST || policy == cache_policy::EVICT_LAST, "Unexpected cache policy");
+    if constexpr (policy == cache_policy::EVICT_FIRST) {
+        asm volatile("createpolicy.fractional.L2::evict_first.b64 %0, %1;\n" : "=l"(cache_policy_val) : "f"(fraction));
+    }
+    else {
+        asm volatile("createpolicy.fractional.L2::evict_last.b64 %0, %1;\n" : "=l"(cache_policy_val) : "f"(fraction));
+    }
+    return cache_policy_val;
 }
 
-#if defined(DF_HOPPER) || defined(DF_BLACKWELL)
-__device__ static inline bool try_wait(semaphore &sem, int kPhaseBit) {
-    void const* const ptr = &sem;
-    uint32_t mbar_ptr = static_cast<uint32_t>(__cvta_generic_to_shared(ptr)); 
+/* CLC scheduler operations */
+
+#ifdef KITTENS_BLACKWELL
+
+namespace clc {
+
+struct handle {
+    uint4 internal_value;
+}; // note that this is an opaque type, so the value should not be accessed directly.
+
+struct result {
     uint32_t success;
+    uint32_t x;
+    uint32_t y;
+    uint32_t z;
+};
 
-    asm volatile(
-        "{\n"
-        ".reg .pred P1; \n"
-        "mbarrier.try_wait.parity.shared::cta.b64 P1, [%1], %2; \n"
-        "selp.b32 %0, 1, 0, P1; \n"
-        "}\n"
-        : "=r"(srccess)
-        : "r"(mbar_ptr), "r"(kPhaseBit)
+/**
+ * @brief Schedules a new threadblock. Must be called by a single thread in the entire CTA cluster.
+ *        The caller must wait on the semaphore with tma::cluster::expect_bytes followed by tma::cluster::wait.
+ *        The handle is multicasted to all CTAs in the cluster and signals the semaphore of all CTAs in the cluster.
+ * @param h The CLC handle.
+ * @param sem The semaphore that the caller will wait on.
+ */
+__device__ static inline void schedule(handle &h, semaphore &sem) {
+    asm volatile("{clusterlaunchcontrol.try_cancel.async.shared::cta.mbarrier::complete_tx::bytes.multicast::cluster::all.b128 [%0], [%1];}"
+        :: "r"(static_cast<uint32_t>(__cvta_generic_to_shared(&h.internal_value))), "r"(static_cast<uint32_t>(__cvta_generic_to_shared(&sem)))
         : "memory"
     );
-    return static_cast<bool>(success);
-}
-#endif
-
-__device__ static inline void careful_wait(semaphore& sem, int kPhaseBit) {
-    void const* const ptr = &sem;
-    uint32_t mbar_ptr = static_cast<uint32_t>(__cvta_generic_to_shared(ptr));
-
-#if defined(DF_HOPPER) || defined(DF_BLACKWELL)
-    asm volatile (
-        "{\n"
-        ".reg .b64                 start_clock, current_clock;\n"
-        "mov.b64                   start_clock, %clock64;\n"
-        ".reg .pred                P_CLOCK;\n"
-        ".reg .pred                P1;\n"
-        "LAB_WAIT:\n"
-        "mbarrier.try_wait.parity.shared::cta.b64 P1, [%0], %1;\n"
-        "@P1                       bra.uni DONE;\n"
-        "mov.b64                   current_clock, %clock64;\n"
-        "sub.u64                   current_clock, current_clock, start_clock;\n"
-        "setp.ge.u64               P_CLOCK, current_clock, 1000000;\n"
-        "@P_CLOCK                  trap;\n"
-        "bra.uni                   LAB_WAIT;\n"
-        "DONE:\n"
-        "}\n"
-        :: "r"(mbar_ptr),
-        "r"(kPhaseBit)
-    );
-#else
-    asm volatile (
-        "{\n"
-        ".reg .pred                P1;\n"
-        "LAB_WAIT:\n"
-        "mbarrier.test_wait.parity.shared::cta.b64 P1, [%0], %1;\n"
-        "@P1                       bra.uni DONE;\n"
-        "nanosleep.u32 5;\n" // wait a few nanoseconds on pre-Hopper architectures to save instruction issue slots
-        "bra.uni                   LAB_WAIT;\n"
-        "DONE:\n"
-        "}\n"
-        :: "r"(mbar_ptr),
-        "r"(kPhaseBit)
-    );
-#endif
 }
 
 /**
-* @brief Checks if the requested semaphore phase is ready.
-*
-* @param semaphore Reference to the semaphore variable.
-* @param kPhaseBit The phase bit used for the semaphore.
-*/
-__device__ static inline int test_wait(semaphore& sem, int kPhaseBit) {
-    void const* const ptr = &sem;
-    uint32_t mbar_ptr = static_cast<uint32_t>(__cvta_generic_to_shared(ptr));
-    int result;
-    asm volatile (
+ * @brief Queries the result of a schedule operation. Calling this again after failure is undefined behavior.
+ * @param h The CLC handle.
+ */
+__device__ static inline result query(handle &h) {
+    result r;
+    asm volatile(
         "{\n"
-        ".reg .pred P1;\n"
-        "mbarrier.test_wait.parity.shared::cta.b64 P1, [%1], %2;\n"
-        "selp.u32 %0,1,0,P1;"
-        "}\n"
-        : "=r"(result)
-        : "r"(mbar_ptr), "r"(kPhaseBit)
+        ".reg .pred SUCCESS;\n"
+        ".reg .b128 CLC_HANDLE;\n"
+        "ld.shared.b128 CLC_HANDLE, [%4];\n"
+        "clusterlaunchcontrol.query_cancel.is_canceled.pred.b128 SUCCESS, CLC_HANDLE;\n"
+        "selp.u32 %0, 1, 0, SUCCESS;\n"
+        "@!SUCCESS bra.uni DONE;\n"
+        "clusterlaunchcontrol.query_cancel.get_first_ctaid.v4.b32.b128 {%1, %2, %3, _}, CLC_HANDLE;\n"
+        "fence.proxy.async.shared::cta;\n"
+        "DONE:\n"
+        "}"
+        : "=r"(r.success), "=r"(r.x), "=r"(r.y), "=r"(r.z)
+        : "r"(static_cast<uint32_t>(__cvta_generic_to_shared(&h.internal_value)))
+        : "memory"
     );
-    return result;
+    return r;
 }
 
-__device__ static inline void arrive_and_wait(semaphore& sem, int kPhaseBit) {
-    arrive(sem);
-    wait(sem, kPhaseBit);
-}
-template<int num_warps> __device__ static inline void arrive_and_wait(barrier<num_warps> bar) {
-    asm volatile("bar.sync %0, %1;\n" :: "r"(bar.barrier_id), "n"(num_warps*WARP_THREADS) : "memory");
-}
-
-template<int N=0> __device__ static inline void load_async_wait() { // for completing (non-TMA) async loads
-    if constexpr (N == 0) {
-        asm volatile("cp.async.wait_all;\n" ::);
-    } else {
-        asm volatile("cp.async.wait_group %0;\n" :: "n"(N));
-    }
-    __syncwarp();
-}
-
-// meant to be used only with shared tiles and shared vectors
-namespace detail {
-template<typename T> struct size_info {
-    static constexpr uint32_t bytes    = sizeof(std::remove_reference_t<T>);
-};
-template<ducks::st::all ST> struct size_info<ST> {
-    static constexpr uint32_t elements = ST::num_elements;
-    static constexpr uint32_t bytes    = ST::num_elements * sizeof(typename ST::dtype);
-};
-template<ducks::sv::all SV> struct size_info<SV> {
-    static constexpr uint32_t elements = SV::length;
-    static constexpr uint32_t bytes    = SV::length * sizeof(typename SV::dtype);
-};
-}
-template<typename... Args>             inline constexpr uint32_t size_bytes             = 0; // base case
-template<typename T, typename... Args> inline constexpr uint32_t size_bytes<T, Args...> = detail::size_info<T>::bytes + size_bytes<Args...>; // recursive case
-
-/* ----------   TCGEN05 synchronization  ---------- */
-
-#if defined(DF_BLACKWELL)
-
-__device__ static inline void tensor_before_thread_sync() {
-    asm volatile("tcgen05.fence::before_thread_sync;\n");
-}
-__device__ static inline void tensor_after_thread_sync() {
-    asm volatile("tcgen05.fence::after_thread_sync;\n");
-}
-
-__device__ inline static void tensor_load_wait() {
-   asm volatile("tcgen05.wait::ld.sync.aligned;");
-}
-__device__ inline static void tensor_store_wait() {
-   asm volatile("tcgen05.wait::st.sync.aligned;"); 
-}
+} // namespace clc
 
 #endif
 
-/* ----------   Multi-GPU synchronization  ---------- */
-
-#if defined(DF_HOPPER) || defined(DF_BLACKWELL)
-
-template <int NUM_DEVICES>
-__device__ static inline void signal(
-    const barrier_t<NUM_DEVICES> &barrier, const coord<ducks::default_type> &idx, const int dst_dev_idx, const int val
-) {
-    asm volatile("{red.release.sys.global.add.s32 [%0], %1;}" :: "l"(&barrier[dst_dev_idx][idx]), "r"(val) : "memory");
+#if defined(KITTENS_HOPPER) || defined(KITTENS_BLACKWELL)
+__device__ static inline bool elect_warp_leader() {
+    uint32_t elected = 0;
+    asm volatile(
+        "{.reg .pred P;\n"
+        " elect.sync _|P, %1;\n"
+        " selp.u32 %0, 1, 0, P;}\n"
+        : "+r"(elected)
+        : "r"(0xFFFFFFFF)
+    );
+    return static_cast<bool>(elected);
 }
-
-template <int NUM_DEVICES>
-__device__ static inline void signal_all(
-    const barrier_t<NUM_DEVICES> &barrier, const coord<ducks::default_type> &idx, const int val
-) {
-    asm volatile("{multimem.red.release.sys.global.add.s32 [%0], %1;}" :: "l"(barrier.mc_ptr_at(idx)), "r"(val) : "memory");
-}
-
-template <int NUM_DEVICES>
-__device__ static inline void wait(
-    const barrier_t<NUM_DEVICES> &barrier, const coord<ducks::default_type> &idx, const int dev_idx, const int expected
-) {
-    int val;
-    do {
-        asm volatile("{ld.relaxed.sys.global.s32 %0, [%1];}" : "=r"(val) : "l"(&barrier[dev_idx][idx]) : "memory");
-    } while (val != expected);
-}
-
-template <int NUM_DEVICES>
-__device__ static inline void barrier_all(
-    const barrier_t<NUM_DEVICES> &barrier, const coord<ducks::default_type> &idx, const int dev_idx
-) {
-    signal_all(barrier, idx, 1);
-    wait(barrier, idx, dev_idx, NUM_DEVICES);
-    asm volatile("{red.release.sys.global.add.s32 [%0], %1;}" :: "l"(&barrier[dev_idx][idx]), "r"(-NUM_DEVICES) : "memory");
-}
-
 #endif
 
-
-
-
-
-
-
-
-
-
-}
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
+} // namespace kittens
