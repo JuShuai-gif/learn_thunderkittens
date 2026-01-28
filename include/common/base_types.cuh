@@ -1,8 +1,8 @@
 #pragma once
 
 #include <stdint.h>
-#include <cuda_fp16.h>
 #include <cuda_bf16.h>
+#include <cuda_fp16.h>
 #if defined(DE_HOPPER) || defined(DF_BLACKWELL)
 #include <cuda_fp8.h>
 #endif
@@ -90,6 +90,16 @@ concept T2 = std::is_same_v<T, float2> || std::is_same_v<T, bf16_2> || std::is_s
 template<typename T>
 concept T1 = std::is_same_v<T, float>  || std::is_same_v<T, bf16  > || std::is_same_v<T, half  > || std::is_same_v<T, fp8e4m3  > || std::is_same_v<T, fp8e5m2  >;
 #else
+/*
+concept 是 编译期谓词（compile-time predicate）：
+- 输入：一个类型 T
+- 输出：true / false
+- 用来约束模板参数
+
+它不是运行时判断，而是：
+- 不满足-->直接编译失败
+- 满足-->代码才能实例化
+*/
 // 打包数据类型
 template<typename T>
 concept T2 = std::is_same_v<T,float2> || std::is_same_v<T,bf16_2> || std::is_same_v<T,half_2>;
@@ -102,6 +112,32 @@ concept T1 = std::is_same_v<T,float> || std::is_same_v<T,bf16> || std::is_same_v
 
 // 基本数据类型
 namespace base_types{
+
+/*
+这是一个 traits 类
+- 没有成员变量
+- 全是 static 函数
+- 完全在编译期使用
+
+标准的 type traits / numeric traits 风格
+
+用法:
+base_types::constants<T>::zero()
+
+template<T1 T>
+auto init = constants<T>::zero();
+
+template<T2 T>
+auto init = constants<T>::zero();
+
+不需要 if constexpr
+不需要 runtime 判断
+全是编译期决策
+
+设计哲学：
+
+算子泛型化 + 数据布局抽象 + traits 提供数值语义
+*/    
 template<typename T> struct constants
 {
     static __device__ inline constexpr T zero(){
@@ -170,11 +206,11 @@ template<> struct constants<bf16_2>
     }
 
     static __device__ inline constexpr bf16_2 pos_infty(){
-        return bf16_2{constants<bf16_2>::pos_infty(),constants<bf16_2>::pos_infty()};
+        return bf16_2{constants<bf16>::pos_infty(),constants<bf16>::pos_infty()};
     }
 
     static __device__ inline constexpr bf16_2 neg_infty(){
-        return bf16_2{constants<bf16_2>::neg_infty(),constants<bf16_2>::neg_infty()};
+        return bf16_2{constants<bf16>::neg_infty(),constants<bf16>::neg_infty()};
     }           
 };
 
@@ -430,7 +466,6 @@ template<typename T,typename U> struct convertor
         return (T)u;
     }
 };
-
 
 // bf16 转 float
 template<> struct convertor<float,bf16>

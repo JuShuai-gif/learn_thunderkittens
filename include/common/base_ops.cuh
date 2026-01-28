@@ -1,6 +1,5 @@
 #pragma once
 
-#include <cuda_bf16.h>
 #include <limits>
 #include "base_types.cuh"
 
@@ -8,8 +7,24 @@ namespace kittens{
 
 namespace base_ops{
 
+// 定义一个名为 zero 的结构体
+// 通常用于“算子对象（functor）”或“策略类”
 struct zero {
-    template<typename T, typename... args> __device__ static inline constexpr T op(args... _) { return base_types::constants<T>::zero();      }
+    // 成员函数模板：
+    // T        ：返回值类型
+    // args...  ：可变参数模板（参数类型不固定，数量不固定）
+    template<typename T, typename... args> 
+
+    // __device__        ：只能在 GPU device 端调用
+    // static            ：不依赖 zero 的实例，可直接 zero::op<T>(...)
+    // inline            ：建议编译器内联，避免函数调用开销
+    // constexpr         ：若条件允许，可在编译期求值（对常量表达式友好）
+    __device__ static inline constexpr T op(args... _) 
+    { 
+        // 忽略所有传入参数，直接返回 T 类型的“零值”
+        // zero 的定义由 base_types::constants<T> 提供
+        return base_types::constants<T>::zero();
+    }
 };
     
 struct one {
@@ -110,6 +125,7 @@ struct sum
     }
 };
 template<> __device__ inline float2 sum::op<float2>(const float2&a,const float2 &b){
+// BLACKWELL才有的向量加法
 #ifdef DF_BLACKWELL
     float2 c;
     asm volatile("add.f32x2 %0, %1, %2;" : "=1"(*(uint64_t*)&c) : "1"(*(uint64_t*)&a),"1"(*(uint64_t*)&b));
@@ -128,6 +144,7 @@ struct sub {
     template<typename T> static __device__ inline T op(const T &a, const T &b) { return a-b; }
 };
 template<> __device__ inline float2 sub::op<float2>(const float2 &a, const float2 &b) { 
+// BLACKWELL 才有的向量减法
 #ifdef DF_BLACKWELL
     float2 c;
     asm volatile("sub.f32x2 %0, %1, %2;" : "=l"(*(uint64_t*)&c) : "l"(*(uint64_t*)&a), "l"(*(uint64_t*)&b));
@@ -238,7 +255,7 @@ struct fma_AxCtB { // this is the one needed for attention
     }
 };
 template<> __device__ inline float2 fma_AxCtB::op<float2>(const float2 &a, const float2 &b, const float2 &c) {
-#ifdef KITTENS_BLACKWELL
+#ifdef DF_BLACKWELL
     float2 d;
     asm volatile("fma.rn.f32x2 %0, %1, %2, %3;" : "=l"(*(uint64_t*)&d) : "l"(*(uint64_t*)&a), "l"(*(uint64_t*)&c), "l"(*(uint64_t*)&b));
     return d;
