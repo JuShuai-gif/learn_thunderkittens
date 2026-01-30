@@ -22,88 +22,103 @@ namespace ducks {
  * @namespace rt
  * 
  * @brief The namespace where concepts and abstract types for register vectors live.
+ * 
+ * 该命名空间包含与寄存器向量相关的概念（concepts）和抽象类型（abstract types）。
  */
 namespace rv {
 /**
  * @brief A dummy type used to identify register vectors.
  * 
- * For a type to quack like an rv, it should define its identifier as ducks::rv::identifier.
- * If a type quacks like ducks::rv::identifier, it will be treated as an rv by compiler checks.
+ * 用于标识寄存器向量的虚拟类型。
+ * 
+ * 对于一个类型，如果它定义了 `ducks::rv::identifier` 作为其标识符，那么它就可以被当作寄存器向量类型来处理。
  */
 struct identifier {};
 /**
-* @brief Concept for all register vectors.
-* @tparam T The type to check against the concept requirements.
-*
-* Requires:
-* - T has a nested type identifier that is the same as rv::identifier.
-*/
+ * @brief Concept for all register vectors.
+ * 
+ * 用于定义所有寄存器向量的概念。
+ * 
+ * @tparam T The type to check against the concept requirements.
+ *
+ * 检查类型 `T` 是否符合寄存器向量的要求：
+ * - 类型 `T` 必须具有一个嵌套类型 `identifier`，并且该类型必须与 `ducks::rv::identifier` 相同。
+ */
 template<typename T>
 concept all = requires {
-    typename T::identifier; // Checks if T::identifier exists
-} && std::is_same_v<typename T::identifier, identifier>; // Checks if T::identifier is ducks::rv::identifier.
-
+    typename T::identifier; // 检查类型 T 是否具有成员类型 identifier
+} && std::is_same_v<typename T::identifier, identifier>; // 检查 T::identifier 是否与 ducks::rv::identifier 相同
+// 各种布局类型概念定义
 template<typename T> concept naive_layout = all<T> && std::is_same_v<typename T::layout, ducks::rv_layout::naive>;
 template<typename T> concept align_layout = all<T> && std::is_same_v<typename T::layout, ducks::rv_layout::align>;
 template<typename T> concept ortho_layout = all<T> && std::is_same_v<typename T::layout, ducks::rv_layout::ortho>;
+// tile_layout 适用于与瓦片进行交互的向量布局
 template<typename T> concept tile_layout  = align_layout<T> || ortho_layout<T>; // vector layouts for interacting with tiles.
 }
 }
 
 /**
  * @brief Register vector structure.
+ * 
+ * 寄存器向量结构体，用于在寄存器中表示一个向量。
  *
  * @tparam _T The packed data type used for the vector elements.
+ *        向量元素使用的数据类型（打包后的数据类型）
  * @tparam _outer_dim The size of the tile, in units of TILE_DIM (16).
- * @tparam _inner_dim This controls the layout of the tile in terms of which axis it maps on the register tile layout.
- *
- * Register vectors are used to accumulate and map values across tiles. You can do computation
- * on them directly if you want, but they're not designed to be maximally efficient vectors
- * as they have substantial duplication and strange layouts to help them work efficiently with
- * the register layouts used by the tensor cores. ThunderKittens wants you working with tiles
- * where possible!
+ *        瓦片的外部维度，单位为 TILE_DIM（通常为 16）
+ * @tparam _inner_dim Controls the layout of the tile in terms of which axis it maps on the register tile layout.
+ *        控制瓦片布局的内部维度，决定了哪些轴在寄存器瓦片布局中进行映射。
+ * 
+ * 寄存器向量用于在瓦片中累积和映射值。如果需要，也可以直接对其进行计算，但它们并不是最优化的向量，因为它们有较大的重复和特殊的布局，
+ * 以便与张量核心的寄存器布局高效配合。ThunderKittens 鼓励您尽量在瓦片级别进行计算！
  */
 template<typename _T, size_t _length, ducks::rv_layout::all _layout=ducks::rv_layout::naive>
 struct rv {
-    using identifier = ducks::rv::identifier; ///< Type identifier for the rv structure.
-    static_assert(kittens::ducks::base_types::T1<_T>); // confirm it's a supported type
-    using layout = _layout;
-    static constexpr bool is_naive = std::is_same_v<layout, ducks::rv_layout::naive>;
-    using T = kittens::base_types::packing<_T>::unpacked_type;
-    using T2 = kittens::base_types::packing<_T>::packed_type;
-    using dtype = std::conditional_t<is_naive, T, T2>; ///< Data type of the vector elements
+    using identifier = ducks::rv::identifier;  ///< rv 结构体的类型标识符，便于区分寄存器向量类型。
+    static_assert(kittens::ducks::base_types::T1<_T>); // 确保传入的类型是支持的基本类型
+    using layout = _layout;///< 使用的寄存器布局类型。
+    static constexpr bool is_naive = std::is_same_v<layout, ducks::rv_layout::naive>;///< 判断布局是否为 naive 布局。
+    // 提取打包类型的未打包和打包类型
+    using T = kittens::base_types::packing<_T>::unpacked_type;///< 向量元素的未打包类型。
+    using T2 = kittens::base_types::packing<_T>::packed_type; ///< 向量元素的打包类型。
+    // 通过条件判断选择合适的数据类型
+    using dtype = std::conditional_t<is_naive, T, T2>; ///< 根据布局类型选择数据类型，如果是 naive 布局则使用 T，否则使用 T2。
 
-    static constexpr int length = _length; ///< Length in elements.
+    static constexpr int length = _length;  ///< 向量的元素数量。
     static_assert(length % kittens::TILE_ROW_DIM<T> == 0, "Length must be divisible by the tile dimension");
-    static constexpr int tiles  = _length / kittens::TILE_ROW_DIM<T>; ///< Length in subtiles, aliased for consistency with sv type
-    static constexpr int inner_dim = layout::inner_dim; ///< Internal layout within a subtile. Either 1 or 2.
-    static constexpr int outer_dim = is_naive ? (tiles+1)/2 : tiles; ///< Outer dim (also length in tiles)
+
+    // 确保元素数量是瓦片维度的整数倍。
+    static constexpr int tiles  = _length / kittens::TILE_ROW_DIM<T>; ///< 计算瓦片数目，与 sv 类型保持一致。
+    static constexpr int inner_dim = layout::inner_dim; ///< 子瓦片内部布局维度，通常为 1 或 2。
+    static constexpr int outer_dim = is_naive ? (tiles+1)/2 : tiles; ///< 外部维度（也即瓦片数目），如果是 naive 布局，外维度是瓦片数的一半。
     #if defined(KITTENS_HOPPER) || defined(KITTENS_BLACKWELL)
     static_assert(!std::is_same_v<T2, fp8e4m3_4> && !std::is_same_v<T2, fp8e5m2_4>, "Unsupported type for fp8");
     #endif
+    // 确保不使用不支持的 fp8 类型。
 
-    dtype data[outer_dim][inner_dim]; ///< The actual register vector data.
-
+    dtype data[outer_dim][inner_dim]; ///< 实际存储寄存器向量数据的二维数组。
+    // 对寄存器向量数据的访问操作符重载
     __device__ inline       dtype* operator[](size_t idx)       { return &data[idx][0]; } ///< A wrapper for indexing into vector data.
     __device__ inline const dtype* operator[](size_t idx) const { return &data[idx][0]; } ///< A wrapper for indexing into vector data.
     __device__ inline       dtype& operator[](int2 outin)       { return data[outin.x][outin.y]; } ///< A wrapper for indexing into vector data.
     __device__ inline const dtype& operator[](int2 outin) const { return data[outin.x][outin.y]; } ///< A wrapper for indexing into vector data.
-
+    // 赋值操作符重载
     __device__ inline void operator=(const T &value) {
         dtype value2;
         if constexpr(is_naive) {
             value2 = value;
         } else {
-            value2 = base_types::packing<T>::pack(value);
+            value2 = base_types::packing<T>::pack(value);// 使用打包类型转换
         }
         #pragma unroll
         for(int i = 0; i < outer_dim; i++) {
             #pragma unroll
             for(int j = 0; j < inner_dim; j++) {
-                data[i][j] = value2;
+                data[i][j] = value2;// 将值赋给寄存器向量的每个元素
             }
         }
     }
+    // 将另一个寄存器向量赋值给当前寄存器向量
     template<typename U>
     __device__ inline void operator=(const rv<U, length, layout> &other) {
         using U2 = base_types::packing<U>::packed_type;
@@ -116,7 +131,7 @@ struct rv {
         }
     }
 };
-
+// 针对不同数据类型创建寄存器向量类型别名
 template<int _l, ducks::rv_layout::all layout=ducks::rv_layout::naive> using rv_fl = rv<float, _l, layout>;
 template<int _l, ducks::rv_layout::all layout=ducks::rv_layout::naive> using rv_bf = rv<bf16,  _l, layout>;
 template<int _l, ducks::rv_layout::all layout=ducks::rv_layout::naive> using rv_hf = rv<half,  _l, layout>;

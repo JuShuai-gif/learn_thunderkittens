@@ -10,161 +10,192 @@
 namespace kittens{
 namespace ducks{
 
-namespace st{
+namespace st{// 用于类型推断的标识结构体
 
-struct identifier{};
+struct identifier{};// 类型标识符基础结构
 
+// 概念检查：检查类型T是否具有正确的标识符
 template<typename T> concept all = requires {
-    typename T::identifier; // Checks if T::identifier exists
-} && std::is_same_v<typename T::identifier, identifier>; // Checks if T::identifier is ducks::st::identifier
+    typename T::identifier; // 检查T::identifier是否存在
+} && std::is_same_v<typename T::identifier, identifier>; // 检查T::identifier是否为ducks::st::identifier
 }
 } // namespace ducks
 
-// Forward declaration of subtile
+// st_subtile的前向声明，用于在st类中作为友元
 template<
-    typename ST,
-    int _subtile_height,
-    int _subtile_width
+    typename ST,            // 父tile类型
+    int _subtile_height,    // 子tile高度
+    int _subtile_width      // 子tile宽度
 >
 struct st_subtile;
 
 
 /**
- * @brief Shared memory tile structure for various data types and layouts.
+ * @brief 支持不同数据类型和布局的共享内存tile结构
  *
- * @tparam T The data type of the elements in the tile. Not packed!
- * @tparam _rows The height of the tile.
- * @tparam _cols The width of the tile.
+ * @tparam _T 元素的数据类型（未打包的原始类型）
+ * @tparam _rows tile的高度
+ * @tparam _cols tile的宽度
+ * @tparam _swizzle 是否启用内存重排（swizzle）优化
+ * @tparam _swizzle_bytes swizzle的字节粒度，0表示自动计算
  */
 template<typename _T, int _rows, int _cols, bool _swizzle=true, int _swizzle_bytes=0>
-struct DF_DEFAULT_ALIGN st {
+struct DF_DEFAULT_ALIGN st {    // 默认对齐的共享内存tile结构
 #ifdef DF_BLACKWELL
+    // Blackwell架构下，FP4类型必须使用打包类型
     static_assert(!std::is_same_v<_T, fp4e2m1>, "For FP4 types, you must use a packed type (i.e., fp4e2m1_2 or fp4e2m1_4).");
 #endif
-    using identifier = ducks::st::identifier;
-    using T = base_types::packing<_T>::unpacked_type;
-    using T2 = base_types::packing<_T>::packed_type;
-    using dtype = T; ///< Data type of the elements in the tile.
+    using identifier = ducks::st::identifier;       // 类型标识符
+    using T = base_types::packing<_T>::unpacked_type;// 未打包的数据类型
+    using T2 = base_types::packing<_T>::packed_type;// 打包的数据类型
+    using dtype = T; ///< tile中元素的数据类型
 
-    static constexpr bool swizzle = _swizzle;
+    static constexpr bool swizzle = _swizzle;// 是否启用swizzle优化
 
-    // define underlying data as same as that projected, to make clear that this is *not* a subtile.
-    static constexpr int underlying_rows          = _rows;
-    static constexpr int underlying_cols          = _cols;
-    static constexpr int underlying_num_elements  = underlying_rows * underlying_cols;
+    // 底层数据定义，明确这不是子tile视图
+    static constexpr int underlying_rows          = _rows;// 底层行数
+    static constexpr int underlying_cols          = _cols;// 底层列数
+    static constexpr int underlying_num_elements  = underlying_rows * underlying_cols;// 底层元素总数
 
-    static constexpr int rows                = _rows; ///< Total number of rows in the tile.
-    static constexpr int cols                = _cols; ///< Total number of cols in the tile.
-    static constexpr int num_elements        = rows * cols; ///< Total number of elements in the tile.
-
+    static constexpr int rows                = _rows; ///< tile的总行数
+    static constexpr int cols                = _cols; ///< tile的总列数
+    static constexpr int num_elements        = rows * cols; ///< tile中的总元素数
+    
+    // 静态断言：确保维度符合要求
     static_assert(!swizzle || (rows % kittens::TILE_ROW_DIM<T> == 0), "Rows must be divisible by the tile dimension");
     static_assert((swizzle && (cols % kittens::TILE_COL_DIM<T> == 0)) || (!swizzle && (cols % kittens::BASE_TILE_DIM == 0)), "Cols must be divisible by the tile dimension");
 
 
 #ifdef DF_BLACKWELL
-    // Must be a 1-packed type (e.g. float, bf16, etc) unless fp4
+    // Blackwell架构：必须是1-packed类型（如float, bf16等），除非是fp4类型
     static_assert(base_types::packing<dtype>::num() == 1 || std::is_same_v<dtype, fp4e2m1_2>); 
 #else
+    // 其他架构：必须是1-packed类型
     static_assert(base_types::packing<dtype>::num() == 1); 
 #endif
 
-    // If a user specifies a swizzle bytes value, the column byte size must be a multiple of the swizzle bytes.
+    // 如果用户指定了swizzle_bytes值，列字节大小必须是swizzle_bytes的倍数
     static_assert(_swizzle_bytes == 0 || _swizzle_bytes == 32 || _swizzle_bytes == 64 || _swizzle_bytes == 128);
+    // 计算swizzle_bytes：如果指定则使用指定值，否则根据数据类型和列数自动计算
     static constexpr int swizzle_bytes = _swizzle_bytes > 0 ? _swizzle_bytes : (
-        sizeof(dtype) == 1 ? (  // Add FP8 case
+        sizeof(dtype) == 1 ? (  // 处理1字节数据类型（如FP8）
             (cols/kittens::TILE_COL_DIM<T>)%4 == 0 ? 128 :
             (cols/kittens::TILE_COL_DIM<T>)%2 == 0 ?  64 : 32
         ) :
-        sizeof(dtype) == 2 ? (
+        sizeof(dtype) == 2 ? (// 处理2字节数据类型（如half, bf16）
             (cols/kittens::TILE_COL_DIM<T>)%4 == 0 ? 128 :
             (cols/kittens::TILE_COL_DIM<T>)%2 == 0 ?  64 : 32
         ) :
-        sizeof(dtype) == 4 ? (
+        sizeof(dtype) == 4 ? (// 处理4字节数据类型（如float）
             (cols/kittens::TILE_COL_DIM<T>)%2 == 0 ? 128 : 64
         ) : -1
     );    
 
-    dtype data[rows * cols]; // 存放
-
+    dtype data[rows * cols]; // 实际存储数据的数组
+    
+    /**
+     * @brief 根据坐标计算内存地址（支持swizzle优化）
+     * @param ptr 指向数据的指针
+     * @param coord 坐标(x,y)，其中x是行索引，y是列索引
+     * @return 指向计算地址的指针
+     */
     __device__ static inline T* idx(T* ptr,int2 coord){
-        int r = coord.x,c = coord.y; // alias
+        int r = coord.x,c = coord.y; // 坐标别名，提高可读性
 
-        if constexpr(swizzle){
-            static constexpr int swizzle_repeat = swizzle_bytes * 8;
-            static constexpr int subtile_cols   = swizzle_bytes / sizeof(T);
-            const int outer_idx = c/subtile_cols;
+        if constexpr(swizzle){// 如果启用了swizzle
+            static constexpr int swizzle_repeat = swizzle_bytes * 8;    // swizzle重复周期
+            static constexpr int subtile_cols   = swizzle_bytes / sizeof(T);    // 每个子tile的列数
+            const int outer_idx = c/subtile_cols;   // 外部索引
+            // 计算原始地址
             const uint64_t addr = (uint64_t)(&ptr[outer_idx*rows*subtile_cols + r*subtile_cols + c%subtile_cols]);
-            const int swizzle = ((addr % swizzle_repeat) >> 7) << 4;
-            return (T*)(addr ^ swizzle);
-        } else {
-            return &ptr[r*cols + c];
+            const int swizzle = ((addr % swizzle_repeat) >> 7) << 4;// 计算swizzle值
+            return (T*)(addr ^ swizzle); // 应用swizzle：通过异或操作重排地址位
+        } else {// 未启用swizzle
+            return &ptr[r*cols + c];// 简单的行主序索引
         }
     }
 
+    /**
+     * @brief 根据坐标计算内存地址（32位版本）
+     * @param ptr 基础地址（32位）
+     * @param coord 坐标(x,y)
+     * @return 计算后的32位地址
+     */
     __device__ static inline uint32_t idx(uint32_t ptr, int2 coord) {
-        int r = coord.x, c = coord.y; // alias
-        if constexpr (swizzle) {
+        int r = coord.x, c = coord.y; // 坐标别名
+        if constexpr (swizzle) {// 如果启用了swizzle
             static constexpr int swizzle_repeat = swizzle_bytes * 8;
             static constexpr int subtile_cols   = swizzle_bytes / sizeof(T);
             const int outer_idx = c/subtile_cols;
+            // 计算原始地址（32位版本）
             const uint32_t addr = ptr + sizeof(T)*(outer_idx*rows*subtile_cols + r*subtile_cols + c%subtile_cols);
             const int swizzle = ((addr % swizzle_repeat) >> 7) << 4;
-            return (addr ^ swizzle);
-        } else {
+            return (addr ^ swizzle);// 应用swizzle
+        } else {// 未启用swizzle
             return ptr + sizeof(T)*(r*cols + c);
         }
     }
-
+    // 下标运算符重载（支持2D坐标）
     __device__ inline       dtype& operator[](const int2 &rowcol)       {
         return *idx(data, rowcol);
     }
     __device__ inline const dtype& operator[](const int2 &rowcol) const {
         return *(const dtype*)idx((dtype*)data, rowcol);
     }
+
+    // 下标运算符重载（支持1D索引）
     __device__ inline       dtype& operator[](int idx)       {
         return data[idx];
     }
     __device__ inline const dtype& operator[](int idx) const {
         return data[idx];
     }
-
+    
+    /**
+     * @brief 创建子tile视图（支持任意行/列划分）
+     * @tparam subtile_rows 子tile的行数
+     * @tparam subtile_cols 子tile的列数
+     * @param rowcol 子tile在原tile中的起始坐标（以子tile为单位）
+     * @return 子tile视图对象
+     */
     template<int subtile_rows, int subtile_cols>
     __device__ inline st_subtile<st<_T, _rows, _cols, _swizzle, _swizzle_bytes>, subtile_rows, subtile_cols> subtile(int2 rowcol);
 
     /**
-     * @brief Return a true "subtile" of this tile, not a temporary view with st_subtile. 
-     *        The constraint is that only column dimension can be divided, and it must be a multiple of swizzle bytes.
+     * @brief 返回真正的"子tile"（而非视图），仅支持列维度的划分
+     * @tparam subtile_cols 子tile的列数
+     * @param idx 子tile的索引
+     * @return 对子tile的引用
+     * 约束：只能划分列维度，且必须是swizzle_bytes的倍数
      */
     template<int subtile_cols>
     __device__ inline st<_T, _rows, subtile_cols, _swizzle, swizzle_bytes /*must not use _swizzle_bytes*/> &subtile(int idx) {
         static_assert(swizzle_bytes > 0, "Parent shared tile must have an explicit swizzle_bytes.");
-        constexpr int swizzle_elements = swizzle_bytes / sizeof(T);
-        static_assert(subtile_cols >= 0 && subtile_cols % swizzle_elements == 0);
+        constexpr int swizzle_elements = swizzle_bytes / sizeof(T);// 每个swizzle块中的元素数
+        static_assert(subtile_cols >= 0 && subtile_cols % swizzle_elements == 0);// 验证子tile列数是swizzle_elements的倍数
+        // 计算并返回对子tile的引用
         return *reinterpret_cast<st<_T, _rows, subtile_cols, _swizzle, swizzle_bytes> *>(
             &data[rows*swizzle_elements*(subtile_cols/swizzle_elements)*idx]
         );
     }
 
-    // vector types
+    // 向量类型别名
     using col_vec = sv<dtype, rows>; ///< Column vector type for this tile
     using row_vec = sv<dtype, cols>; ///< Row vector type for this tile
 };
 
 
 /**
- * @brief A reference into a chunk of shared tile memory.
+ * @brief 共享内存tile的引用（视图），指向原始tile的一部分
  *
- * The st_subtile is a drop-in replacement for an st which internally
- * references the appropriate memory while performing minimal address
- * calculations. You should never create this directly, but instead
- * have subtile_inplace return it for you instead. (`auto` is nice.)
- *
- * You can generally just pretend this is an st. But not for wgmma's.
+ * st_subtile是st的替代品，内部引用适当的内存并进行最小的地址计算。
+ * 不应直接创建此对象，而应使用subtile方法返回它。
+ * 通常可以将其视为st，但不能用于wgmma操作。
  */
 template<
-    typename _ST,
-    int _subtile_rows,
-    int _subtile_cols
+    typename _ST,// 父tile类型
+    int _subtile_rows,// 子tile行数
+    int _subtile_cols// 子tile列数
 >
 struct st_subtile
 {
@@ -172,65 +203,83 @@ struct st_subtile
     using ST = _ST;
     using T = ST::T;
     using T2 = ST::T2;
-    using dtype = T;    ///< Data type of the elements in the tile.
+    using dtype = T;    ///< tile中元素的数据类型
 
-    static constexpr bool swizzle = ST::swizzle;
-
+    static constexpr bool swizzle = ST::swizzle;// 继承父tile的swizzle设置
+    // 父tile的底层维度
     static constexpr int underlying_rows          = ST::underlying_rows;
     static_assert(underlying_rows % kittens::TILE_ROW_DIM<T> == 0, "Underlying rows must be divisible by the tile dimension");
     static constexpr int underlying_cols          = ST::underlying_cols;
     static_assert(underlying_cols % kittens::TILE_COL_DIM<T> == 0, "Underlying cols must be divisible by the tile dimension");
     static constexpr int underlying_num_elements  = ST::underlying_num_elements;
-
+    // 子tile的维度
     static constexpr int rows                = _subtile_rows;
     static_assert(rows % kittens::TILE_ROW_DIM<T> == 0, "Rows must be divisible by the tile dimension");
     static constexpr int cols                = _subtile_cols;
     static_assert(cols % kittens::TILE_COL_DIM<T> == 0, "Cols must be divisible by the tile dimension");
     static constexpr int num_elements        = rows * cols;
 
-    static constexpr int swizzle_bytes = ST::swizzle_bytes;
+    static constexpr int swizzle_bytes = ST::swizzle_bytes;// 继承父tile的swizzle_bytes
     
-    dtype* data;
-    int row_offset,col_offset;
+    dtype* data;// 指向父tile数据的指针
+    int row_offset,col_offset;// 行偏移量 列偏移量
 
+    /**
+     * @brief 构造函数
+     * @param src 父tile引用
+     * @param rowcol 子tile在父tile中的起始坐标（以子tile为单位）
+     */
     __device__ st_subtile(ST &src,int2 rowcol){
-        data = &src.data[0];
-        row_offset = rowcol.x * rows;
-        col_offset = rowcol.y * cols;        
+        data = &src.data[0];// 指向父tile数据
+        row_offset = rowcol.x * rows;// 计算行偏移
+        col_offset = rowcol.y * cols;   // 计算列偏移     
     }
-
+    
+    /**
+     * @brief 根据坐标计算内存地址（考虑偏移量）
+     * @param ptr 指向数据的指针
+     * @param coord 相对坐标（相对于子tile）
+     * @return 指向计算地址的指针
+     */
     __device__ inline T* idx(T *ptr, const int2 coord) const { // naive row-major coord default
-        int r = coord.x+row_offset, c = coord.y+col_offset; // alias
-        if constexpr (swizzle) {
+        int r = coord.x+row_offset, c = coord.y+col_offset; // 计算绝对坐标
+        if constexpr (swizzle) {// 如果启用了swizzle
             static constexpr int swizzle_repeat = swizzle_bytes * 8;
             static constexpr int subtile_cols   = swizzle_bytes / sizeof(T);
             const int outer_idx = c/subtile_cols;
+            // 计算绝对地址
             const uint64_t addr = (uint64_t)(&ptr[outer_idx*underlying_rows*subtile_cols + r*subtile_cols + c%subtile_cols]);
             const int swizzle = ((addr % swizzle_repeat) >> 7) << 4;
-            return (T*)(addr ^ swizzle);
-        } else {
+            return (T*)(addr ^ swizzle);// 应用swizzle
+        } else {// 未启用swizzle
             return &ptr[r*cols + c];
         }
     }
+
+    /**
+     * @brief 根据坐标计算内存地址（32位版本，考虑偏移量）
+     * @param ptr 基础地址（32位）
+     * @param coord 相对坐标
+     * @return 计算后的32位地址
+     */
     __device__ inline uint32_t idx(uint32_t ptr, const int2 coord) const { // naive row-major coord default
-        int r = coord.x+row_offset, c = coord.y+col_offset; // alias
-        if constexpr(swizzle) {
+        int r = coord.x+row_offset, c = coord.y+col_offset;  // 计算绝对坐标
+        if constexpr(swizzle) {// 如果启用了swizzle
             static constexpr int swizzle_repeat = swizzle_bytes * 8;
             static constexpr int subtile_cols   = swizzle_bytes / sizeof(T);
             const int outer_idx = c/subtile_cols;
+            // 计算绝对地址（32位版本）
             const uint32_t addr = ptr + sizeof(T)*(outer_idx*underlying_rows*subtile_cols + r*subtile_cols + c%subtile_cols);
             const int swizzle = ((addr % swizzle_repeat) >> 7) << 4;
-            return (addr ^ swizzle);
-        } else {
+            return (addr ^ swizzle);// 应用swizzle
+        } else {// 未启用swizzle
             return ptr + sizeof(T)*(r*cols + c);
         }
     }    
 
     /**
-     * @brief Access a shared tile element using a row and column, as if the tile were row-major.
-     *
-     * This is the preferred way to access memory within a shared tile, which abstracts
-     * indexing calculations for swizzled layouts.
+     * @brief 访问子tile元素（使用行和列坐标，如同tile是行主序的）
+     * 这是访问共享内存tile的首选方式，抽象了swizzle布局的索引计算
      */
     __device__ inline       dtype& operator[](const int2 &rowcol)       {
         return *idx(data, rowcol);
@@ -239,76 +288,77 @@ struct st_subtile
         return *(const dtype*)idx((dtype*)data, rowcol);
     }
 
-    // single-coord operator[] is left undefined as it would likely be an improper use of st_subtile type.
-    // can of course be end-run by just accessing .data directly.
+    // 注意：单坐标operator[]未定义，因为这不适用于st_subtile类型
+    // 当然，可以直接通过.data来绕过这个限制
 
-    // vector types
+    // 向量类型别名
     using col_vec = sv<dtype, rows>;
     using row_vec = sv<dtype, cols>;
-
+    /**
+     * @brief 赋值运算符，用于将整个子tile设置为指定值（默认在warp范围内执行）
+     * @param value 要设置的值
+     */
     __device__ inline void operator=(const dtype &value) { // runs at warp scope by default
         #pragma unroll
         for(int i = kittens::laneid(); i < num_elements; i += WARP_THREADS) {
-            data[i] = value;
+            data[i] = value;// 注意：这里直接访问data，不考虑偏移
         }
     }
 };
 
-template <typename _T, int _rows, int _cols, bool _swizzle, int _swizzle_bytes> // Class template parameters
-template <int subtile_rows, int subtile_cols> // Function template parameters
-__device__ inline st_subtile<st<_T, _rows, _cols, _swizzle, _swizzle_bytes>, subtile_rows, subtile_cols> // Return type
-st<_T, _rows, _cols, _swizzle, _swizzle_bytes>::subtile(int2 rowcol) // Qualified function name and parameters
+// st类的subtile方法的实现（定义）
+template <typename _T, int _rows, int _cols, bool _swizzle, int _swizzle_bytes> // 类模板参数
+template <int subtile_rows, int subtile_cols> // 函数模板参数
+__device__ inline st_subtile<st<_T, _rows, _cols, _swizzle, _swizzle_bytes>, subtile_rows, subtile_cols> // 返回类型
+st<_T, _rows, _cols, _swizzle, _swizzle_bytes>::subtile(int2 rowcol) // 限定函数名和参数
 {
-    // Type aliases for convenience within the function body
-    using ST_t = st<_T, _rows, _cols>; // Alias for the parent tile type
-    using dtype = typename ST_t::dtype;  // Alias for the data type
+    // 函数体内的类型别名
+    using ST_t = st<_T, _rows, _cols>;  // 父tile类型的别名
+    using dtype = typename ST_t::dtype; // 数据类型的别名
 
-    // Static assertions (as provided in the initial request)
+    // 静态断言：验证子tile维度有效性
     static_assert(subtile_rows > 0 && subtile_cols > 0, "Subtile dimensions must be positive.");
     static_assert(subtile_rows % kittens::TILE_ROW_DIM<dtype> == 0,
         "Subtile rows must be divisible by the base tile row dimension.");
     static_assert(subtile_cols % kittens::TILE_COL_DIM<dtype> == 0,
         "Subtile cols must be divisible by the base tile col dimension.");
 
-    // Check divisibility of parent rows/cols by subtile rows/cols
+    // 检查父tile维度是否能被子tile维度整除
     static_assert(ST_t::rows % subtile_rows == 0,
         "Parent tile rows must be divisible by subtile rows.");
     static_assert(ST_t::cols % subtile_cols == 0,
         "Parent tile cols must be divisible by subtile cols.");
 
-    // Ensure the parent st object is not itself a subtile view by comparing its
-    // dimensions to its underlying dimensions.
+    // 确保父st对象本身不是子tile视图
     static_assert(ST_t::rows == ST_t::underlying_rows && ST_t::cols == ST_t::underlying_cols,
         "Cannot create a subtile from an object that appears to be a subtile view (rows/cols mismatch underlying).");
 
-    // Construct and return the st_subtile object using its constructor:
-    // st_subtile(ST &src, int2 rowcol)
-    // Here, 'src' is the current 'st' object (*this)
+    // 构造并返回st_subtile对象
     return st_subtile<ST_t, subtile_rows, subtile_cols>(*this, rowcol);
 }
 
 
-/* ----------  WRAPPERS FOR PRETTINESS  ---------- */
+/* ----------  用于美观性的包装器类型 ---------- */
 template<int _height, int _width, bool _swizzle=true, int _swizzle_bytes=0> 
-using st_bf = st<bf16,  _height, _width, _swizzle, _swizzle_bytes>;
+using st_bf = st<bf16,  _height, _width, _swizzle, _swizzle_bytes>;// bfloat16类型的tile
 
 template<int _height, int _width, bool _swizzle=true, int _swizzle_bytes=0> 
-using st_hf = st<half,  _height, _width, _swizzle, _swizzle_bytes>;
+using st_hf = st<half,  _height, _width, _swizzle, _swizzle_bytes>;// half类型的tile
 
 template<int _height, int _width, bool _swizzle=true, int _swizzle_bytes=0> 
-using st_fl = st<float, _height, _width, _swizzle, _swizzle_bytes>;
+using st_fl = st<float, _height, _width, _swizzle, _swizzle_bytes>;// float类型的tile
 
 #if defined(DF_HOPPER) || defined(DF_BLACKWELL)
 template<int _height, int _width, bool _swizzle=true, int _swizzle_bytes=0> 
-using st_fp8e4m3 = st<fp8e4m3, _height, _width, _swizzle, _swizzle_bytes>;
+using st_fp8e4m3 = st<fp8e4m3, _height, _width, _swizzle, _swizzle_bytes>;// FP8 E4M3类型的tile
 template<int _height, int _width, bool _swizzle=true, int _swizzle_bytes=0> 
-using st_fp8e5m2 = st<fp8e5m2, _height, _width, _swizzle, _swizzle_bytes>;
+using st_fp8e5m2 = st<fp8e5m2, _height, _width, _swizzle, _swizzle_bytes>;// FP8 E5M2类型的tile
 #endif
 #if defined(DF_BLACKWELL)
 template<int _height, int _width, bool _swizzle=true, int _swizzle_bytes=0> 
-using st_fp8e8m0 = st<fp8e8m0, _height, _width, _swizzle, _swizzle_bytes>;
+using st_fp8e8m0 = st<fp8e8m0, _height, _width, _swizzle, _swizzle_bytes>;// FP8 E8M0类型的tile
 template<int _height, int _width, bool _swizzle=true, int _swizzle_bytes=0> 
-using st_fp4e2m1_2 = st<fp4e2m1_2, _height, _width, _swizzle, _swizzle_bytes>;
+using st_fp4e2m1_2 = st<fp4e2m1_2, _height, _width, _swizzle, _swizzle_bytes>; // FP4 E2M1（打包为2
 #endif
 
 

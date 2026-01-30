@@ -15,36 +15,49 @@ namespace kittens {
 
 /* ----------  MAIN VECTOR STRUCT  ---------- */
 
-// helper struct for type inference
+// 这是一个辅助命名空间，用于定义与向量相关的概念和类型。
 namespace ducks {
 /**
  * @namespace rt
  * 
- * @brief The namespace where concepts and abstract types for register vectors live.
+ * @brief 定义了寄存器向量的概念和抽象类型的命名空间。
  */
 namespace crv {
 /**
- * @brief A dummy type used to identify register vectors.
+ * @brief 一个虚拟类型，用于标识寄存器向量类型。
  * 
- * For a type to quack like an rv, it should define its identifier as ducks::rv::identifier.
- * If a type quacks like ducks::rv::identifier, it will be treated as an rv by compiler checks.
+ * 如果一个类型符合"像"寄存器向量（rv）的特性，它应该将其标识符定义为 ducks::rv::identifier。
+ * 只要一个类型具备 ducks::rv::identifier 标识符，它就会在编译器检查中被视作一个寄存器向量（rv）。
  */
 struct identifier {};
 /**
-* @brief Concept for all register vectors.
-* @tparam T The type to check against the concept requirements.
-*
-* Requires:
-* - T has a nested type identifier that is the same as rv::identifier.
-*/
+ * @brief 寄存器向量的概念定义
+ * 
+ * @tparam T 需要检查的类型
+ *
+ * 要求：
+ * - T 必须包含一个嵌套类型 identifier，该类型必须与 ducks::rv::identifier 相同。
+ */
 template<typename T>
 concept all = requires {
-    typename T::identifier; // Checks if T::identifier exists
-} && std::is_same_v<typename T::identifier, identifier>; // Checks if T::identifier is ducks::rv::identifier.
+    typename T::identifier; // 检查 T 是否具有 identifier 类型
+} && std::is_same_v<typename T::identifier, identifier>; // 检查 T::identifier 是否等于 ducks::rv::identifier。
 
+/**
+ * @brief 检查类型 T 是否使用 naive 布局（无对齐优化）
+ */
 template<typename T> concept naive_layout = all<T> && std::is_same_v<typename T::layout, ducks::rv_layout::naive>;
+/**
+ * @brief 检查类型 T 是否使用 align 布局（带对齐优化）
+ */
 template<typename T> concept align_layout = all<T> && std::is_same_v<typename T::layout, ducks::rv_layout::align>;
+/**
+ * @brief 检查类型 T 是否使用 ortho 布局（正交对齐布局）
+ */
 template<typename T> concept ortho_layout = all<T> && std::is_same_v<typename T::layout, ducks::rv_layout::ortho>;
+/**
+ * @brief 检查类型 T 是否使用 tile 布局（即对齐或正交布局）
+ */
 template<typename T> concept tile_layout  = align_layout<T> || ortho_layout<T>; // vector layouts for interacting with tiles.
 }
 }
