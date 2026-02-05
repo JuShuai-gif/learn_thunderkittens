@@ -757,21 +757,24 @@ __device__ static inline void mma_ABt(D &d,
                                 const A &a,
                                 const B &b, // 注意：B是行主序且维度为(M, K)，而不是列主序的(K, M)
                                 const C &c) {
-    KITTENS_CHECK_WARP
-    
-    static_assert(D::rows == A::rows && D::cols == B::rows); // Check D matches A, B
-    static_assert(A::cols == B::cols); // Check reduction dim is same
-    static_assert(D::rows == C::rows && D::cols == C::cols); // Check D matches C
-    #if defined(KITTENS_HOPPER) || defined(KITTENS_BLACKWELL)
+    KITTENS_CHECK_WARP// 检查是否在warp内执行
+    // 静态断言：检查维度匹配
+    static_assert(D::rows == A::rows && D::cols == B::rows); // 检查D的维度与A的行数、B的行数匹配
+    static_assert(A::cols == B::cols); // 检查约减维度（K）相同
+    static_assert(D::rows == C::rows && D::cols == C::cols); // 检查D与C维度匹配
+
+    // 数据类型检查，支持不同精度组合
+    #if defined(DF_HOPPER) || defined(DF_BLACKWELL)// Hopper或Blackwell架构
     static_assert(
+        // 支持三种精度组合：
         (std::is_same_v<typename D::T, float> && std::is_same_v<typename A::T, bf16> &&
-            std::is_same_v<typename B::T, bf16> && std::is_same_v<typename C::T, float>) ||
+            std::is_same_v<typename B::T, bf16> && std::is_same_v<typename C::T, float>) ||     // bf16输入，float累加
         (std::is_same_v<typename D::T, half> && std::is_same_v<typename A::T, half> &&
-            std::is_same_v<typename B::T, half> && std::is_same_v<typename C::T, half>)  ||
+            std::is_same_v<typename B::T, half> && std::is_same_v<typename C::T, half>)  ||     // half输入输出
         (std::is_same_v<typename D::T, float> && std::is_same_v<typename A::T, fp8e4m3> &&
-            std::is_same_v<typename B::T, fp8e4m3> && std::is_same_v<typename C::T, float>)
+            std::is_same_v<typename B::T, fp8e4m3> && std::is_same_v<typename C::T, float>)     // fp8输入，float累加
     );
-    #else
+    #else   // 非Hopper/Blackwell架构
     static_assert(
         (std::is_same_v<typename D::T, float> && std::is_same_v<typename A::T, bf16> &&
             std::is_same_v<typename B::T, bf16> && std::is_same_v<typename C::T, float>) ||
@@ -781,16 +784,22 @@ __device__ static inline void mma_ABt(D &d,
             std::is_same_v<typename B::T, half> && std::is_same_v<typename C::T, half>)
     );
     #endif
-    #pragma unroll
+
+    // 外层循环：遍历输出矩阵D的行瓦片（N维度）
+    #pragma unroll // 循环展开优化
     for(int n = 0; n < D::height; n++) {
+        // 内层循环：遍历输出矩阵D的列瓦片（M维度）        
         #pragma unroll
         for(int m = 0; m < D::width; m++) {
+            // 第一步：初始化累加，使用C的对应瓦片            
             mma_ABt_base(
-                d.tiles[n][m],
-                a.tiles[n][0],
-                b.tiles[m][0],
-                c.tiles[n][m]
+                d.tiles[n][m],  // 输出瓦片
+                a.tiles[n][0],  // A的第n行第0列瓦片
+                b.tiles[m][0],  // B的第m行第0列瓦片（注意：B是行主序，这里取的是行索引m）
+                c.tiles[n][m]   // C的对应瓦片作为初始累加值
             );
+
+            // 后续步骤：K维度累加，从k=1开始
             #pragma unroll
             for(int k = 1; k < A::width; k++) {
                 mma_ABt_base(
@@ -803,30 +812,40 @@ __device__ static inline void mma_ABt(D &d,
         }
     }
 }
+
+
 /**
  * @brief Matrix multiply-accumulate operation with transposed A.
+ * 计算A转置乘以B的矩阵乘累加操作。
  *
  * This function performs the matrix multiply-accumulate operation
  * using the `hmma16816` instruction.
+ * 此函数使用`hmma16816`指令执行矩阵乘累加操作。
  *
- * @tparam N The number of row tiles.
- * @tparam K The number of column tiles for the A matrix and row tiles for the B matrix.
- * @tparam M The number of column tiles for the B matrix.
- * @param[out] d The output rt_fl<N, M, row_layout> accumulator.
- * @param[in] a The first input rt_bf<K, N, row_layout> matrix.
- * @param[in] b The second input rt_bf<K, M, col_layout> matrix in column-major mode.
- * @param[in] c The input rt_fl<N, M, row_layout> accumulator matrix.
+ * 执行操作: D = Aᵀ × B + C
+ *
+ * @tparam N The number of row tiles. (行瓦片数量)
+ * @tparam K The number of column tiles for the A matrix and row tiles for the B matrix. (A矩阵列瓦片数和B矩阵行瓦片数)
+ * @tparam M The number of column tiles for the B matrix. (B矩阵列瓦片数)
+ * @param[out] d The output rt_fl<N, M, row_layout> accumulator. (输出累加器矩阵D，行主序)
+ * @param[in] a The first input rt_bf<K, N, row_layout> matrix. (输入矩阵A，列主序，维度K×N)
+ * @param[in] b The second input rt_bf<K, M, col_layout> matrix in column-major mode. (输入矩阵B，列主序，维度K×M)
+ * @param[in] c The input rt_fl<N, M, row_layout> accumulator matrix. (输入累加器矩阵C，行主序)
  */
 template<ducks::rt::row_layout D, ducks::rt::col_layout A, ducks::rt::col_layout B, ducks::rt::row_layout C>
 __device__ static inline void mma_AtB(D &d,
                                 const A &a,
                                 const B &b,
                                 const C &c) {
-    KITTENS_CHECK_WARP
-    static_assert(D::rows == A::cols && D::cols == B::cols); // Check D matches A, B
-    static_assert(A::rows == B::rows); // Check reduction dim is same
-    static_assert(D::rows == C::rows && D::cols == C::cols); // Check D matches C
-    #if defined(KITTENS_HOPPER) || defined(KITTENS_BLACKWELL)
+    KITTENS_CHECK_WARP  // 检查是否在warp内执行
+
+    // 静态断言：检查维度匹配
+    static_assert(D::rows == A::cols && D::cols == B::cols); // D的行数等于A的列数，D的列数等于B的列数
+    static_assert(A::rows == B::rows); // 约减维度（K）相同：A的行数等于B的行数
+    static_assert(D::rows == C::rows && D::cols == C::cols); // D与C维度匹配
+
+    // 数据类型检查，支持不同精度组合
+    #if defined(DF_HOPPER) || defined(DF_BLACKWELL)
     static_assert(
         (std::is_same_v<typename D::T, float> && std::is_same_v<typename A::T, bf16> &&
             std::is_same_v<typename B::T, bf16> && std::is_same_v<typename C::T, float>) ||
@@ -845,16 +864,21 @@ __device__ static inline void mma_AtB(D &d,
             std::is_same_v<typename B::T, half> && std::is_same_v<typename C::T, half>)
     );
     #endif
+
+    // 外层循环：遍历输出矩阵D的行瓦片（N维度）
     #pragma unroll
     for(int n = 0; n < D::height; n++) {
+        // 内层循环：遍历输出矩阵D的列瓦片（M维度）
         #pragma unroll
         for(int m = 0; m < D::width; m++) {
+            // 第一步：初始化累加，使用C的对应瓦片
             mma_AtB_base(
-                d.tiles[n][m],
-                a.tiles[0][n],
-                b.tiles[0][m],
-                c.tiles[n][m]
+                d.tiles[n][m],  // 输出瓦片
+                a.tiles[0][n],  // A的第0行第n列瓦片（注意：A是列主序，这里取的是列索引n）
+                b.tiles[0][m],  // B的第0行第m列瓦片（注意：B是列主序，这里取的是列索引m）
+                c.tiles[n][m]   // C的对应瓦片作为初始累加值
             );
+            // 后续步骤：K维度累加，从k=1开始
             #pragma unroll
             for(int k = 1; k < A::height; k++) {
                 mma_AtB_base(
@@ -867,26 +891,33 @@ __device__ static inline void mma_AtB(D &d,
         }
     }
 }
+
+
 /**
  * @brief Matrix multiply-accumulate operation with transposed A and B.
+ * 计算A转置乘以B转置的矩阵乘累加操作。
  *
  * This function performs the matrix multiply-accumulate operation
  * using the `hmma16816` instruction.
+ * 此函数使用`hmma16816`指令执行矩阵乘累加操作。
  *
- * @tparam N The number of row tiles.
- * @tparam K The number of column tiles for the A matrix and row tiles for the B matrix.
- * @tparam M The number of column tiles for the B matrix.
- * @param[out] d The output rt_fl<N, M, row_layout> accumulator.
- * @param[in] a The first input rt_bf<K, N, col_layout> matrix.
- * @param[in] b The second input rt_bf<M, K, row_layout> matrix in column-major mode.
- * @param[in] c The input rt_fl<N, M, row_layout> accumulator matrix.
+ * 执行操作: D = Aᵀ × Bᵀ + C
+ *
+ * @tparam N The number of row tiles. (行瓦片数量)
+ * @tparam K The number of column tiles for the A matrix and row tiles for the B matrix. (A矩阵列瓦片数和B矩阵行瓦片数)
+ * @tparam M The number of column tiles for the B matrix. (B矩阵列瓦片数)
+ * @param[out] d The output rt_fl<N, M, row_layout> accumulator. (输出累加器矩阵D，行主序)
+ * @param[in] a The first input rt_bf<K, N, col_layout> matrix. (输入矩阵A，列主序，维度K×N)
+ * @param[in] b The second input rt_bf<M, K, row_layout> matrix in column-major mode. (输入矩阵B，行主序，维度M×K)
+ * @param[in] c The input rt_fl<N, M, row_layout> accumulator matrix. (输入累加器矩阵C，行主序)
  */
 template<ducks::rt::row_layout D, ducks::rt::col_layout A, ducks::rt::row_layout B, ducks::rt::row_layout C>
 __device__ static inline void mma_AtBt(D &d,
                                  const A &a,
                                  const B &b,
                                  const C &c) {
-    KITTENS_CHECK_WARP
+    KITTENS_CHECK_WARP  // 检查是否在warp内执行
+    
     static_assert(D::rows == A::cols && D::cols == B::rows); // Check D matches A, B
     static_assert(A::rows == B::cols); // Check reduction dim is same
     static_assert(D::rows == C::rows && D::cols == C::cols); // Check D matches C
@@ -909,69 +940,116 @@ __device__ static inline void mma_AtBt(D &d,
             std::is_same_v<typename B::T, half> && std::is_same_v<typename C::T, half>)
     );
     #endif
+
+    // 外层循环：遍历输出矩阵D的行瓦片（N维度）    
     #pragma unroll
     for(int n = 0; n < D::height; n++) {
+        // 内层循环：遍历输出矩阵D的列瓦片（M维度）
         #pragma unroll
         for(int m = 0; m < D::width; m++) {
+            // 第一步：初始化累加，使用C的对应瓦片
             mma_AtBt_base(
                 d.tiles[n][m],
                 a.tiles[0][n],
                 b.tiles[m][0],
                 c.tiles[n][m]
             );
+            // 后续步骤：K维度累加，从k=1开始
             #pragma unroll
-            for(int k = 1; k < A::height; k++) {
+            for(int k = 1; k < A::height; k++) {    // 注意：对于列主序的A，height对应行数K
                 mma_AtBt_base(
-                    d.tiles[n][m],
-                    a.tiles[k][n],
-                    b.tiles[m][k],
-                    d.tiles[n][m]
+                    d.tiles[n][m],// 输出瓦片（同时作为输入累加器）
+                    a.tiles[k][n],// A的第k行第n列瓦片
+                    b.tiles[m][k],// B的第m行第k列瓦片
+                    d.tiles[n][m]// 使用当前D瓦片作为累加器（更新累加结果）
                 );
             }
         }
     }
 }
 
+/**
+ * @brief Generalized matrix multiply-accumulate operation with optional transpositions.
+ * 通用的矩阵乘累加操作，支持可选的转置标志。
+ *
+ * This function performs the matrix multiply-accumulate operation
+ * with transposition flags for matrices A and B.
+ * 此函数根据A和B的转置标志执行矩阵乘累加操作。
+ *
+ * @tparam trans_A Transposition flag for matrix A (transpose::T for transposed, transpose::N for not). (矩阵A转置标志)
+ * @tparam trans_B Transposition flag for matrix B (transpose::T for transposed, transpose::N for not). (矩阵B转置标志)
+ * @tparam D Output matrix type (must satisfy ducks::rt::all). (输出矩阵类型)
+ * @tparam A First input matrix type (must satisfy ducks::rt::all). (第一个输入矩阵类型)
+ * @tparam B Second input matrix type (must satisfy ducks::rt::all). (第二个输入矩阵类型)
+ * @tparam C Accumulator matrix type (must satisfy ducks::rt::all). (累加器矩阵类型)
+ * @param[out] d The output accumulator matrix. (输出累加器矩阵)
+ * @param[in] a The first input matrix. (第一个输入矩阵)
+ * @param[in] b The second input matrix. (第二个输入矩阵)
+ * @param[in] c The input accumulator matrix. (输入累加器矩阵)
+ */
 template<int trans_A, int trans_B, ducks::rt::all D, ducks::rt::all A, ducks::rt::all B, ducks::rt::all C>
 __device__ static inline void mma(D &d,
                                   const A &a,
                                   const B &b,
                                   const C &c) {
-    KITTENS_CHECK_WARP
-    if constexpr(trans_A == transpose::T) {
-        if constexpr(trans_B == transpose::T) {
-            mma_AtBt(d, a, b, c);
-        } else {
-            mma_AtB(d, a, b, c);
+    KITTENS_CHECK_WARP  // 检查是否在warp内执行
+    
+    // 根据转置标志选择对应的具体实现函数
+    if constexpr(trans_A == transpose::T) { // A需要转置
+        if constexpr(trans_B == transpose::T) { // B需要转置
+            mma_AtBt(d, a, b, c);       // 计算 Aᵀ × Bᵀ + C
+        } else {        // B不需要转置
+            mma_AtB(d, a, b, c);        // 计算 Aᵀ × B + C
         }
-    } else {
-        if constexpr(trans_B == transpose::T) {
-            mma_ABt(d, a, b, c);
-        } else {
-            mma_AB(d, a, b, c);
+    } else {    // A不需要转置
+        if constexpr(trans_B == transpose::T) {// B需要转置
+            mma_ABt(d, a, b, c);// 计算 A × Bᵀ + C
+        } else { // B不需要转置
+            mma_AB(d, a, b, c);// 计算 A × B + C（未在提供代码中显示，但假设存在）
         }
     }
 }
+
+/**
+ * @brief Generalized matrix multiply-accumulate operation with optional transpositions (return version).
+ * 通用的矩阵乘累加操作，支持可选的转置标志（返回结果版本）。
+ *
+ * This function performs the matrix multiply-accumulate operation
+ * with transposition flags for matrices A and B and returns the result.
+ * 此函数根据A和B的转置标志执行矩阵乘累加操作并返回结果。
+ *
+ * @tparam trans_A Transposition flag for matrix A (transpose::T for transposed, transpose::N for not). (矩阵A转置标志)
+ * @tparam trans_B Transposition flag for matrix B (transpose::T for transposed, transpose::N for not). (矩阵B转置标志)
+ * @tparam A First input matrix type (must satisfy ducks::rt::all). (第一个输入矩阵类型)
+ * @tparam B Second input matrix type (must satisfy ducks::rt::all). (第二个输入矩阵类型)
+ * @tparam C Accumulator matrix type (must satisfy ducks::rt::all). (累加器矩阵类型)
+ * @param[in] a The first input matrix. (第一个输入矩阵)
+ * @param[in] b The second input matrix. (第二个输入矩阵)
+ * @param[in] c The input accumulator matrix. (输入累加器矩阵)
+ * @return The result accumulator matrix of type C. (返回类型为C的结果累加器矩阵)
+ */
 template<int trans_A, int trans_B, ducks::rt::all A, ducks::rt::all B, ducks::rt::all C>
 __device__ static inline C mma(const A &a,
                                const B &b,
                                const C &c) {
-    KITTENS_CHECK_WARP
-    C d;
-    if constexpr(trans_A == transpose::T) {
-        if constexpr(trans_B == transpose::T) {
-            mma_AtBt(d, a, b, c);
-        } else {
-            mma_AtB(d, a, b, c);
+    KITTENS_CHECK_WARP // 检查是否在warp内执行
+    C d; // 创建输出矩阵（默认构造）
+
+    // 根据转置标志选择对应的具体实现函数    
+    if constexpr(trans_A == transpose::T) {     // A需要转置
+        if constexpr(trans_B == transpose::T) { // B需要转置
+            mma_AtBt(d, a, b, c);   // 计算 Aᵀ × Bᵀ + C
+        } else {    // B不需要转置
+            mma_AtB(d, a, b, c);    // 计算 Aᵀ × B + C
         }
-    } else {
-        if constexpr(trans_B == transpose::T) {
-            mma_ABt(d, a, b, c);
-        } else {
-            mma_AB(d, a, b, c);
+    } else {    // A不需要转置
+        if constexpr(trans_B == transpose::T) {// B需要转置
+            mma_ABt(d, a, b, c);// 计算 A × Bᵀ + C
+        } else {// B不需要转置
+            mma_AB(d, a, b, c);// 计算 A × B + C（未在提供代码中显示，但假设存在）
         }
     }
-    return d;
+    return d;// 返回结果
 }
 
 
@@ -984,73 +1062,90 @@ __device__ static inline C mma(const A &a,
 
 
 /**
- * @brief Matrix multiply-accumulate operation for complex tiles
+ * @brief 复数矩阵乘加运算（半精度版本）
  *
- * This function calls mma_AB with hf arguments
+ * 此函数使用半精度参数调用基础的mma_AB函数，实现复数矩阵的乘加运算
+ * 复数矩阵乘法公式：(A_real + i*A_imag) * (B_real + i*B_imag) = 
+ *                 (A_real*B_real - A_imag*B_imag) + i*(A_real*B_imag + A_imag*B_real)
  *
- * @tparam N The number of row tiles.
- * @tparam K The number of column tiles for the A matrix and row tiles for the B matrix.
- * @tparam M The number of column tiles for the B matrix.
- * @param[out] d The output rt_cmplx_hf<N, M, row_layout> accumulator.
- * @param[in] a The first input rt_cmplx_hf<N, K, row_layout> matrix.
- * @param[in] b The second input rt_cmplx_hf<K, M, col_layout> matrix in column-major mode.
- * @param[in] c The input rt_cmplx_hf<N, M, row_layout> accumulator matrix.
+ * @tparam N A矩阵的行块数，也是结果矩阵的行块数
+ * @tparam K A矩阵的列块数，同时也是B矩阵的行块数
+ * @tparam M B矩阵的列块数，也是结果矩阵的列块数
+ * @param[out] d 输出累加器矩阵，类型为rt_cmplx_hf<N, M, row_layout>，行主序
+ * @param[in] a 第一个输入矩阵，类型为rt_cmplx_hf<N, K, row_layout>，行主序
+ * @param[in] b 第二个输入矩阵，类型为rt_cmplx_hf<K, M, col_layout>，列主序
+ * @param[in] c 输入累加器矩阵，类型为rt_cmplx_hf<N, M, row_layout>，行主序
  */
 template<int N, int K, int M>
 __device__ static inline void mma_AB(crt_hf<N, M, ducks::rt_layout::row> &d,
                                const crt_hf<N, K, ducks::rt_layout::row> &a,
                                const crt_hf<K, M, ducks::rt_layout::col> &b,
                                const crt_hf<N, M, ducks::rt_layout::row> &c) {
-    KITTENS_CHECK_WARP
+    KITTENS_CHECK_WARP// 检查是否在正确的warp中执行
     
-    // Copy data from input accumulate register into output
-    ::kittens::group<1>::copy(d.real, c.real);
-    ::kittens::group<1>::copy(d.imag, c.imag);
+    // 将输入累加器c的数据复制到输出累加器d中
+    ::kittens::group<1>::copy(d.real, c.real);// 复制实部
+    ::kittens::group<1>::copy(d.imag, c.imag);// 复制虚部
 
-    // Negative on B matrix so we can use single accum register
+    // 创建临时矩阵用于存储A矩阵虚部的负值，以便使用单个累加寄存器
     rt_hf<N, K, ducks::rt_layout::row> tmp;
-    // Hex value for -1 in float16
+    // 定义float16类型的-1常量（0xFB80是half类型中-1的二进制表示）
     constexpr half factor = std::bit_cast<__half>(uint16_t(0xFB80));
+
+    // 计算A_imag * (-1)，结果存入tmp
     ::kittens::group<1>::mul(tmp, a.imag, factor);
+
+    // 计算实部：d.real = a.real * b.real + (-a.imag) * b.imag + c.real
+    // 1. 计算 a.real * b.real，累加到d.real（此时d.real已包含c.real）
     mma_AB(d.real, a.real, b.real, d.real);
+    // 2. 计算 (-a.imag) * b.imag，累加到d.real
     mma_AB(d.real, tmp, b.imag, d.real);
 
+    // 计算虚部：d.imag = a.real * b.imag + a.imag * b.real + c.imag
+    // 1. 计算 a.real * b.imag，累加到d.imag（此时d.imag已包含c.imag）
     mma_AB(d.imag, a.real, b.imag, d.imag);
+    // 2. 计算 a.imag * b.real，累加到d.imag
     mma_AB(d.imag, a.imag, b.real, d.imag);
 }
-/**
- * @brief Matrix multiply-accumulate operation for complex tiles
- *
- * This function calls mma_AB with bf16 arguments
- *
- * @tparam N The number of row tiles.
- * @tparam K The number of column tiles for the A matrix and row tiles for the B matrix.
- * @tparam M The number of column tiles for the B matrix.
- * @param[out] d The output rt_cmplx_fl<N, M, row_layout> accumulator.
- * @param[in] a The first input rt_cmplx_bf<N, K, row_layout> matrix.
- * @param[in] b The second input rt_cmplx_bf<K, M, col_layout> matrix in column-major mode.
- * @param[in] c The input rt_cmplx_fl<N, M, row_layout> accumulator matrix.
- */
 
+/**
+ * @brief 复数矩阵乘加运算（bf16到fp32混合精度版本）
+ *
+ * 此函数使用bf16输入和fp32累加器，调用基础的mma_AB函数实现复数矩阵的乘加运算
+ * 输入矩阵为bf16精度，累加器为fp32精度，可提高数值稳定性
+ *
+ * @tparam N A矩阵的行块数，也是结果矩阵的行块数
+ * @tparam K A矩阵的列块数，同时也是B矩阵的行块数
+ * @tparam M B矩阵的列块数，也是结果矩阵的列块数
+ * @param[out] d 输出累加器矩阵，类型为rt_cmplx_fl<N, M, row_layout>，行主序，fp32精度
+ * @param[in] a 第一个输入矩阵，类型为rt_cmplx_bf<N, K, row_layout>，行主序，bf16精度
+ * @param[in] b 第二个输入矩阵，类型为rt_cmplx_bf<K, M, col_layout>，列主序，bf16精度
+ * @param[in] c 输入累加器矩阵，类型为rt_cmplx_fl<N, M, row_layout>，行主序，fp32精度
+ */
 template<int N, int K, int M>
 __device__ static inline void mma_AB(crt_fl<N, M, ducks::rt_layout::row> &d,
                                const crt_bf<N, K, ducks::rt_layout::row> &a,
                                const crt_bf<K, M, ducks::rt_layout::col> &b,
                                const crt_fl<N, M, ducks::rt_layout::row> &c) {
-    KITTENS_CHECK_WARP
+    KITTENS_CHECK_WARP  // 检查是否在正确的warp中执行
     
-    // Copy data from input accumulate register into output
+    // 将输入累加器c的数据复制到输出累加器d中
     ::kittens::group<1>::copy(d.real, c.real);
     ::kittens::group<1>::copy(d.imag, c.imag);
 
-    // Negative on B matrix so we can use single accum register
+    // 创建临时矩阵用于存储A矩阵虚部的负值，以便使用单个累加寄存器
     kittens::rt_bf<N, K, ducks::rt_layout::row> tmp;
-    // Hex value for -1 in bf16
+    // 定义bf16类型的-1常量（0xBF80是bfloat16类型中-1的二进制表示）
     constexpr bf16 factor = std::bit_cast<__nv_bfloat16>(uint16_t(0xBF80));
+    // 计算A_imag * (-1)，结果存入tmp
     ::kittens::group<1>::mul(tmp, a.imag, factor);
-    mma_AB(d.real, a.real, b.real, d.real);
-    mma_AB(d.real, tmp, b.imag, d.real);
 
-    mma_AB(d.imag, a.real, b.imag, d.imag);
-    mma_AB(d.imag, a.imag, b.real, d.imag);
+    // 计算实部：d.real = a.real * b.real + (-a.imag) * b.imag + c.real
+    // 注意：这里使用bf16输入和fp32累加器的混合精度乘法
+    mma_AB(d.real, a.real, b.real, d.real); // a.real * b.real 累加到d.real
+    mma_AB(d.real, tmp, b.imag, d.real);    // (-a.imag) * b.imag 累加到d.real
+    
+    // 计算虚部：d.imag = a.real * b.imag + a.imag * b.real + c.imag
+    mma_AB(d.imag, a.real, b.imag, d.imag); // a.real * b.imag 累加到d.imag
+    mma_AB(d.imag, a.imag, b.real, d.imag); // a.imag * b.real 累加到d.imag
 }
